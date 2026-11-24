@@ -1,5 +1,6 @@
 plugins {
     kotlin("jvm") version "2.4.21"
+    application
 }
 
 group = "org.example"
@@ -19,4 +20,8 @@ kotlin {
 
 tasks.test {
     useJUnitPlatform()
+}
+
+application {
+    mainClass.set("aramarchuk.keyValueBase.MainKt")
 }

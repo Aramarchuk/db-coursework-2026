@@ -1,4 +1,4 @@
-package aramarchuk.KVBase.storage
+package aramarchuk.keyValueBase.storage
 
 class InMemoryKVStore<K : Comparable<K>>: KVStore<K> {
     val storage = sortedMapOf<K, ByteArray>()

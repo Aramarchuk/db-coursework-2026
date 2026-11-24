@@ -1,4 +1,4 @@
-package aramarchuk.KVBase.storage
+package aramarchuk.keyValueBase.storage
 
 interface KVStore<K> {
     fun put(key: K, value: ByteArray)
