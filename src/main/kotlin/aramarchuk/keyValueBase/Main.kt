@@ -1,12 +1,18 @@
 package aramarchuk.keyValueBase
 
-import aramarchuk.keyValueBase.storage.InMemoryKVStore
+import aramarchuk.keyValueBase.storage.FileWriteAheadLog
 import aramarchuk.keyValueBase.storage.KVStore
+import aramarchuk.keyValueBase.storage.WalBackedKVStore
+import java.nio.file.Path
 
 fun main() {
-    val store: KVStore<String> = InMemoryKVStore()
+    val store: KVStore<String> = WalBackedKVStore(
+        wal = FileWriteAheadLog(Path.of("data", "store.wal")),
+        encodeKey = { it.toByteArray(Charsets.UTF_8) },
+        decodeKey = { it.toString(Charsets.UTF_8) },
+    )
 
-    println("Key-value store. Commands: put <key> <value>, get <key>, delete <key>, exit")
+    println("Persistent key-value store (data directory: ./data). Commands: put <key> <value>, get <key>, delete <key>, exit")
 
     try {
         while (true) {
