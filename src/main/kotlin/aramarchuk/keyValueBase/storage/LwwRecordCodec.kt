@@ -4,6 +4,7 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.io.DataInput
 import java.io.IOException
 
 object LwwRecordCodec {
@@ -30,32 +31,33 @@ object LwwRecordCodec {
 
     fun decode(bytes: ByteArray): LwwRecord<ByteArray> {
         DataInputStream(ByteArrayInputStream(bytes)).use { input ->
-            val formatVersion = input.readUnsignedByte()
-            if (formatVersion != FORMAT_VERSION) {
-                throw IOException("Unsupported LWW record format version $formatVersion")
-            }
-
-            val recordType = input.readUnsignedByte()
-            val version = readVersion(input)
-            val record = when (recordType) {
-                VALUE_RECORD -> {
-                    val valueSize = input.readInt()
-                    if (valueSize < 0 || valueSize != input.available()) {
-                        throw IOException("Invalid LWW value size $valueSize")
-                    }
-                    val value = ByteArray(valueSize)
-                    input.readFully(value)
-                    LwwRecord.Value(value, version)
-                }
-
-                TOMBSTONE_RECORD -> LwwRecord.Tombstone(version)
-                else -> throw IOException("Unknown LWW record type $recordType")
-            }
-
+            val record = decode(input)
             if (input.available() != 0) {
                 throw IOException("Unexpected trailing bytes in LWW record")
             }
             return record
+        }
+    }
+
+    fun decode(input: DataInput): LwwRecord<ByteArray> {
+        val formatVersion = input.readUnsignedByte()
+        if (formatVersion != FORMAT_VERSION) {
+            throw IOException("Unsupported LWW record format version $formatVersion")
+        }
+
+        val recordType = input.readUnsignedByte()
+        val version = readVersion(input)
+        return when (recordType) {
+            VALUE_RECORD -> {
+                val valueSize = input.readInt()
+                if (valueSize < 0) throw IOException("Invalid LWW value size $valueSize")
+                val value = ByteArray(valueSize)
+                input.readFully(value)
+                LwwRecord.Value(value, version)
+            }
+
+            TOMBSTONE_RECORD -> LwwRecord.Tombstone(version)
+            else -> throw IOException("Unknown LWW record type $recordType")
         }
     }
 
@@ -64,7 +66,7 @@ object LwwRecordCodec {
         output.writeLong(version.replicaId)
     }
 
-    private fun readVersion(input: DataInputStream): LwwVersion {
+    private fun readVersion(input: DataInput): LwwVersion {
         val logicalClock = input.readLong()
         val replicaId = input.readLong()
         if (logicalClock < 0L || replicaId < 0L) {

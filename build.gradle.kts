@@ -20,6 +20,9 @@ kotlin {
 
 tasks.test {
     useJUnitPlatform()
+    testLogging {
+        events("started", "passed", "skipped", "failed")
+    }
 }
 
 application {

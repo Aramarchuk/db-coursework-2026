@@ -9,8 +9,39 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.fail
 
 class StorageSmokeTest {
+    @Test
+    fun `state codec round trips values and tombstones`() {
+        val state = LwwMapState(
+            linkedMapOf(
+                bytes("a") to LwwRecord.Value(bytes("short"), LwwVersion(3L, 1L)),
+                bytes("a much longer key") to LwwRecord.Tombstone(LwwVersion(8L, 2L)),
+            ),
+        )
+
+        assertStatesEqual(state, LwwStateCodex.decode(LwwStateCodex.encode(state)))
+    }
+
+    @Test
+    fun `state survives writing to a file and loading into a new in-memory state`() =
+        withTempDirectory { directory ->
+            val state = LwwMapState(
+                linkedMapOf(
+                    bytes("alpha") to LwwRecord.Value(bytes("first value"), LwwVersion(4L, 1L)),
+                    bytes("beta") to LwwRecord.Value(bytes("a longer value"), LwwVersion(5L, 2L)),
+                    bytes("removed") to LwwRecord.Tombstone(LwwVersion(6L, 2L)),
+                ),
+            )
+            val stateFile = directory.resolve("snapshot.bin")
+
+            Files.write(stateFile, LwwStateCodex.encode(state))
+            val restoredState = LwwStateCodex.decode(Files.readAllBytes(stateFile))
+
+            assertStatesEqual(state, restoredState)
+        }
+
     @Test
     fun `WAL replays operations after reopening`() = withTempDirectory { directory ->
         val walPath = directory.resolve("store.wal")
@@ -83,6 +114,34 @@ class StorageSmokeTest {
     )
 
     private fun bytes(value: String): ByteArray = value.toByteArray(Charsets.UTF_8)
+
+    private fun assertStatesEqual(
+        expected: LwwMapState<ByteArray, ByteArray>,
+        actual: LwwMapState<ByteArray, ByteArray>,
+    ) {
+        assertEquals(expected.entries.size, actual.entries.size)
+        expected.entries.forEach { (expectedKey, expectedRecord) ->
+            val actualEntry = actual.entries.entries.singleOrNull { (actualKey, _) ->
+                expectedKey.contentEquals(actualKey)
+            } ?: fail("Missing key ${expectedKey.toString(Charsets.UTF_8)}")
+
+            val actualRecord = actualEntry.value
+            assertEquals(expectedRecord.version, actualRecord.version)
+            when (expectedRecord) {
+                is LwwRecord.Value -> {
+                    val actualValue = actualRecord as? LwwRecord.Value
+                        ?: fail("Record type mismatch for ${expectedKey.toString(Charsets.UTF_8)}")
+                    assertContentEquals(expectedRecord.value, actualValue.value)
+                }
+
+                is LwwRecord.Tombstone -> {
+                    if (actualRecord !is LwwRecord.Tombstone) {
+                        fail("Record type mismatch for ${expectedKey.toString(Charsets.UTF_8)}")
+                    }
+                }
+            }
+        }
+    }
 
     private fun withTempDirectory(block: (Path) -> Unit) {
         val directory = Files.createTempDirectory("kv-storage-smoke")
