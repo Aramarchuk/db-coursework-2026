@@ -1,21 +1,29 @@
 package aramarchuk.keyValueBase
 
-import aramarchuk.keyValueBase.storage.FileWriteAheadLog
-import aramarchuk.keyValueBase.storage.KVStore
-import aramarchuk.keyValueBase.storage.WalBackedKVStore
+import aramarchuk.keyValueBase.storage.Replica
+import aramarchuk.keyValueBase.storage.ReplicaConfig
+import java.net.URI
 import java.nio.file.Path
 
-fun main() {
-    val store: KVStore<String> = WalBackedKVStore(
-        wal = FileWriteAheadLog(Path.of("data", "store.wal")),
-        encodeKey = { it.toByteArray(Charsets.UTF_8) },
-        decodeKey = { it.toString(Charsets.UTF_8) },
-        replicaId = 1L,
-    )
+fun main(args: Array<String>) {
+    val config = try {
+        parseConfig(args)
+    } catch (failure: IllegalArgumentException) {
+        System.err.println(failure.message)
+        return
+    }
+    val replica = try {
+        Replica(config)
+    } catch (failure: Exception) {
+        System.err.println("Could not create replica: ${failure.message}")
+        return
+    }
 
-    println("Persistent key-value store (data directory: ./data). Commands: put <key> <value>, get <key>, delete <key>, exit")
+    replica.use { replica ->
+        replica.start()
+        println("Replica ${config.replicaId} listening at http://127.0.0.1:${config.port}/snapshot")
+        println("Commands: put <key> <value>, get <key>, delete <key>, sync <peer-url>, exit")
 
-    try {
         while (true) {
             print("> ")
             System.out.flush()
@@ -29,7 +37,7 @@ fun main() {
                     if (parts.size < 3) {
                         println("Usage: put <key> <value>")
                     } else {
-                        store.put(parts[1], parts[2].toByteArray(Charsets.UTF_8))
+                        replica.storage.put(parts[1], parts[2].toByteArray(Charsets.UTF_8))
                         println("OK")
                     }
                 }
@@ -38,7 +46,7 @@ fun main() {
                     if (parts.size != 2) {
                         println("Usage: get <key>")
                     } else {
-                        val value = store.get(parts[1])
+                        val value = replica.storage.get(parts[1])
                         println(value?.toString(Charsets.UTF_8) ?: "(not found)")
                     }
                 }
@@ -47,8 +55,21 @@ fun main() {
                     if (parts.size != 2) {
                         println("Usage: delete <key>")
                     } else {
-                        store.delete(parts[1])
+                        replica.storage.delete(parts[1])
                         println("OK")
+                    }
+                }
+
+                "sync" -> {
+                    if (parts.size != 2) {
+                        println("Usage: sync <peer-url>")
+                    } else {
+                        try {
+                            replica.sync(URI.create(parts[1]))
+                            println("Synchronized")
+                        } catch (failure: Exception) {
+                            println("Sync failed: ${failure.message}")
+                        }
                     }
                 }
 
@@ -56,7 +77,28 @@ fun main() {
                 else -> println("Unknown command: ${parts[0]}")
             }
         }
-    } finally {
-        store.close()
     }
+}
+
+private fun parseConfig(args: Array<String>): ReplicaConfig {
+    val usage = "Usage: run --id <number> --port <number> --data-dir <path>"
+    require(args.size % 2 == 0) { usage }
+
+    val options = mutableMapOf<String, String>()
+    var index = 0
+    while (index < args.size) {
+        val name = args[index]
+        require(name in setOf("--id", "--port", "--data-dir")) { "Unknown option: $name\n$usage" }
+        require(options.put(name, args[index + 1]) == null) { "Option repeated: $name\n$usage" }
+        index += 2
+    }
+
+    val replicaId = options["--id"]?.toLongOrNull()?.takeIf { it >= 0L }
+        ?: throw IllegalArgumentException("A non-negative --id is required\n$usage")
+    val port = options["--port"]?.toIntOrNull()?.takeIf { it in 1..65535 }
+        ?: throw IllegalArgumentException("A valid --port is required\n$usage")
+    val dataDirectory = options["--data-dir"]?.let { Path.of(it) }
+        ?: throw IllegalArgumentException("A --data-dir is required\n$usage")
+
+    return ReplicaConfig(replicaId, port, dataDirectory)
 }

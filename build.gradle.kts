@@ -25,6 +25,10 @@ tasks.test {
     }
 }
 
+tasks.named<JavaExec>("run") {
+    standardInput = System.`in`
+}
+
 application {
     mainClass.set("aramarchuk.keyValueBase.MainKt")
 }
