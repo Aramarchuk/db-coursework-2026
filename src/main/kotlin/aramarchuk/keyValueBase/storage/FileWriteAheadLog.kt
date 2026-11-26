@@ -131,10 +131,8 @@ class FileWriteAheadLog(path: Path) : WriteAheadLog {
     override fun close() {
         if (closed) return
         closed = true
-        try {
+        channel.use { channel ->
             if (channel.isOpen) channel.force(true)
-        } finally {
-            channel.close()
         }
     }
 
@@ -188,7 +186,7 @@ class FileWriteAheadLog(path: Path) : WriteAheadLog {
             readFully(source, lengthBuffer, offset)
             lengthBuffer.flip()
             val frameBodySize = lengthBuffer.int
-            if (frameBodySize < MIN_FRAME_BODY_SIZE || frameBodySize > MAX_FRAME_SIZE) {
+            if (frameBodySize !in MIN_FRAME_BODY_SIZE..MAX_FRAME_SIZE) {
                 throw IOException("Invalid WAL frame length $frameBodySize at offset $offset")
             }
             if (remaining - WAL_ENTRY_SIZE_IN_BYTES < frameBodySize) break // Torn final frame.
