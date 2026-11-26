@@ -9,12 +9,6 @@ data class ReplicaConfig(
     val dataDirectory: Path,
 )
 
-/** Versioned WAL payload to add to the existing [WalOperation] model. */
-data class LwwWalRecord(
-    val key: ByteArray,
-    val record: LwwRecord<ByteArray>,
-)
-
 /** Encodes and decodes a full state snapshot for transport. */
 interface LwwMapStateCodec<K, V> {
     fun encode(state: LwwMapState<K, V>): ByteArray
@@ -23,10 +17,10 @@ interface LwwMapStateCodec<K, V> {
 
 /** Starts the peer endpoint that merges a posted snapshot and returns merged state. */
 interface LwwMapSyncServer : AutoCloseable {
-    fun start(port: Int, map: LwwMap<String, ByteArray>)
+    fun start()
 }
 
 /** Exchanges full map state with one peer and merges the response locally. */
 interface LwwMapSyncClient {
-    fun sync(peer: URI, map: LwwMap<String, ByteArray>)
+    fun sync(peer: URI)
 }

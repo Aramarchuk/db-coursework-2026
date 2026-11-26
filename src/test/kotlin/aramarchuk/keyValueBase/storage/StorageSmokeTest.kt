@@ -16,12 +16,13 @@ class StorageSmokeTest {
     fun `state codec round trips values and tombstones`() {
         val state = LwwMapState(
             linkedMapOf(
-                bytes("a") to LwwRecord.Value(bytes("short"), LwwVersion(3L, 1L)),
-                bytes("a much longer key") to LwwRecord.Tombstone(LwwVersion(8L, 2L)),
+                "a" to LwwRecord.Value(bytes("short"), LwwVersion(3L, 1L)),
+                "a much longer key" to LwwRecord.Tombstone(LwwVersion(8L, 2L)),
             ),
         )
 
-        assertStatesEqual(state, LwwStateCodex.decode(LwwStateCodex.encode(state)))
+        val codec = stringStateCodec()
+        assertStatesEqual(state, codec.decode(codec.encode(state)))
     }
 
     @Test
@@ -29,15 +30,16 @@ class StorageSmokeTest {
         withTempDirectory { directory ->
             val state = LwwMapState(
                 linkedMapOf(
-                    bytes("alpha") to LwwRecord.Value(bytes("first value"), LwwVersion(4L, 1L)),
-                    bytes("beta") to LwwRecord.Value(bytes("a longer value"), LwwVersion(5L, 2L)),
-                    bytes("removed") to LwwRecord.Tombstone(LwwVersion(6L, 2L)),
+                    "alpha" to LwwRecord.Value(bytes("first value"), LwwVersion(4L, 1L)),
+                    "beta" to LwwRecord.Value(bytes("a longer value"), LwwVersion(5L, 2L)),
+                    "removed" to LwwRecord.Tombstone(LwwVersion(6L, 2L)),
                 ),
             )
             val stateFile = directory.resolve("snapshot.bin")
+            val codec = stringStateCodec()
 
-            Files.write(stateFile, LwwStateCodex.encode(state))
-            val restoredState = LwwStateCodex.decode(Files.readAllBytes(stateFile))
+            Files.write(stateFile, codec.encode(state))
+            val restoredState = codec.decode(Files.readAllBytes(stateFile))
 
             assertStatesEqual(state, restoredState)
         }
@@ -115,28 +117,31 @@ class StorageSmokeTest {
 
     private fun bytes(value: String): ByteArray = value.toByteArray(Charsets.UTF_8)
 
+    private fun stringStateCodec() = LwwMapStateBinaryCodec<String>(
+        encodeKey = { it.toByteArray(Charsets.UTF_8) },
+        decodeKey = { it.toString(Charsets.UTF_8) },
+    )
+
     private fun assertStatesEqual(
-        expected: LwwMapState<ByteArray, ByteArray>,
-        actual: LwwMapState<ByteArray, ByteArray>,
+        expected: LwwMapState<String, ByteArray>,
+        actual: LwwMapState<String, ByteArray>,
     ) {
         assertEquals(expected.entries.size, actual.entries.size)
         expected.entries.forEach { (expectedKey, expectedRecord) ->
-            val actualEntry = actual.entries.entries.singleOrNull { (actualKey, _) ->
-                expectedKey.contentEquals(actualKey)
-            } ?: fail("Missing key ${expectedKey.toString(Charsets.UTF_8)}")
+            val actualRecord = actual.entries[expectedKey]
+                ?: fail("Missing key $expectedKey")
 
-            val actualRecord = actualEntry.value
             assertEquals(expectedRecord.version, actualRecord.version)
             when (expectedRecord) {
                 is LwwRecord.Value -> {
                     val actualValue = actualRecord as? LwwRecord.Value
-                        ?: fail("Record type mismatch for ${expectedKey.toString(Charsets.UTF_8)}")
+                        ?: fail("Record type mismatch for $expectedKey")
                     assertContentEquals(expectedRecord.value, actualValue.value)
                 }
 
                 is LwwRecord.Tombstone -> {
                     if (actualRecord !is LwwRecord.Tombstone) {
-                        fail("Record type mismatch for ${expectedKey.toString(Charsets.UTF_8)}")
+                        fail("Record type mismatch for $expectedKey")
                     }
                 }
             }
