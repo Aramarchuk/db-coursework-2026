@@ -11,8 +11,10 @@ class WalBackedKVStore<K : Comparable<K>>(
     private val wal: WriteAheadLog,
     private val encodeKey: (K) -> ByteArray,
     private val decodeKey: (ByteArray) -> K,
-) : KVStore<K> {
-    private val storage = sortedMapOf<K, ByteArray>()
+    override val replicaId: Long,
+) : KVStore<K>, AutoCloseable, LwwMap<K, ByteArray> {
+    private val storage = sortedMapOf<K, LwwRecord<ByteArray>>()
+    private var logicalClock = 0L
     private var closed = false
     private var walFailure: Throwable? = null
 
@@ -20,7 +22,11 @@ class WalBackedKVStore<K : Comparable<K>>(
         try {
             wal.replay().forEach { entry ->
                 when (val operation = entry.operation) {
-                    is WalOperation.Put -> storage[decodeKey(operation.key.copyOf())] = operation.value.copyOf()
+                    is WalOperation.Put -> {
+                        val record = LwwRecordCodec.decode(operation.value)
+                        storage[decodeKey(operation.key.copyOf())] = record
+                        logicalClock = maxOf(logicalClock, record.version.logicalClock)
+                    }
                     is WalOperation.Delete -> storage.remove(decodeKey(operation.key.copyOf()))
                 }
             }
@@ -39,24 +45,50 @@ class WalBackedKVStore<K : Comparable<K>>(
         ensureUsable()
         val encodedKey = encodeKey(key).copyOf()
         val stableValue = value.copyOf()
-        persist(WalOperation.Put(encodedKey, stableValue)) {
-            storage[key] = stableValue
+        val record = LwwRecord.Value(stableValue, LwwVersion(nextLogicalClock(), replicaId))
+        persist(WalOperation.Put(encodedKey, LwwRecordCodec.encode(record))) {
+            storage[key] = record
         }
     }
 
     @Synchronized
     override fun get(key: K): ByteArray? {
         ensureUsable()
-        return storage[key]?.copyOf()
+        return (storage[key] as? LwwRecord.Value)?.value?.copyOf()
     }
 
     @Synchronized
     override fun delete(key: K) {
         ensureUsable()
         val encodedKey = encodeKey(key).copyOf()
-        persist(WalOperation.Delete(encodedKey)) {
-            storage.remove(key)
+        val record = LwwRecord.Tombstone(LwwVersion(nextLogicalClock(), replicaId))
+        persist(WalOperation.Put(encodedKey, LwwRecordCodec.encode(record))) {
+            storage[key] = record
         }
+    }
+
+    @Synchronized
+    override fun merge(state: LwwMapState<K, ByteArray>) {
+        ensureUsable()
+        state.entries.forEach { (key, incomingRecord) ->
+            logicalClock = maxOf(logicalClock, incomingRecord.version.logicalClock)
+            val currentRecord = storage[key]
+            if (currentRecord == null || incomingRecord.version > currentRecord.version) {
+                val stableRecord = copyRecord(incomingRecord)
+                val encodedKey = encodeKey(key).copyOf()
+                persist(WalOperation.Put(encodedKey, LwwRecordCodec.encode(stableRecord))) {
+                    storage[key] = stableRecord
+                }
+            }
+        }
+    }
+
+    @Synchronized
+    override fun snapshot(): LwwMapState<K, ByteArray> {
+        ensureUsable()
+        val entries = sortedMapOf<K, LwwRecord<ByteArray>>()
+        storage.forEach { (key, record) -> entries[key] = copyRecord(record) }
+        return LwwMapState(entries)
     }
 
     @Synchronized
@@ -84,5 +116,15 @@ class WalBackedKVStore<K : Comparable<K>>(
         walFailure?.let { failure ->
             throw IllegalStateException("Store is unusable after a WAL failure; reopen it", failure)
         }
+    }
+
+    private fun nextLogicalClock(): Long {
+        logicalClock = Math.addExact(logicalClock, 1L)
+        return logicalClock
+    }
+
+    private fun copyRecord(record: LwwRecord<ByteArray>): LwwRecord<ByteArray> = when (record) {
+        is LwwRecord.Value -> LwwRecord.Value(record.value.copyOf(), record.version)
+        is LwwRecord.Tombstone -> record
     }
 }

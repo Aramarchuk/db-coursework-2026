@@ -10,6 +10,7 @@ fun main() {
         wal = FileWriteAheadLog(Path.of("data", "store.wal")),
         encodeKey = { it.toByteArray(Charsets.UTF_8) },
         decodeKey = { it.toString(Charsets.UTF_8) },
+        replicaId = 1L,
     )
 
     println("Persistent key-value store (data directory: ./data). Commands: put <key> <value>, get <key>, delete <key>, exit")
