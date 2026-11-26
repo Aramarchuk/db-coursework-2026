@@ -10,23 +10,17 @@ class LwwMapStateBinaryCodec<K>(
     private val encodeKey: (K) -> ByteArray,
     private val decodeKey: (ByteArray) -> K,
 ) : LwwMapStateCodec<K, ByteArray> {
-    private fun encodeItem(key: K, record: LwwRecord<ByteArray>): ByteArray {
-        val encodedKey = encodeKey(key)
-        val bytes = ByteArrayOutputStream()
-        DataOutputStream(bytes).use { output ->
-            output.writeInt(encodedKey.size)
-            output.write(encodedKey)
-            output.write(LwwRecordCodec.encode(record))
-        }
-        return bytes.toByteArray()
-    }
-
     override fun encode(state: LwwMapState<K, ByteArray>): ByteArray {
         val bytes = ByteArrayOutputStream()
         DataOutputStream(bytes).use { output ->
             output.writeByte(FORMAT_VERSION)
             output.writeInt(state.entries.size)
-            state.entries.forEach { (key, record) -> output.write(encodeItem(key, record)) }
+            state.entries.forEach { (key, record) ->
+                val encodedKey = encodeKey(key)
+                output.writeInt(encodedKey.size)
+                output.write(encodedKey)
+                LwwRecordCodec.writeRecordTo(record, output)
+            }
         }
         return bytes.toByteArray()
     }

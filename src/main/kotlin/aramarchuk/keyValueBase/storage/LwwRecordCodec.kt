@@ -5,28 +5,33 @@ import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.DataInput
+import java.io.DataOutput
 import java.io.IOException
 
 object LwwRecordCodec {
     fun encode(record: LwwRecord<ByteArray>): ByteArray {
         val bytes = ByteArrayOutputStream()
         DataOutputStream(bytes).use { output ->
-            output.writeByte(FORMAT_VERSION)
-            when (record) {
-                is LwwRecord.Value -> {
-                    output.writeByte(VALUE_RECORD)
-                    writeVersion(output, record.version)
-                    output.writeInt(record.value.size)
-                    output.write(record.value)
-                }
-
-                is LwwRecord.Tombstone -> {
-                    output.writeByte(TOMBSTONE_RECORD)
-                    writeVersion(output, record.version)
-                }
-            }
+            writeRecordTo(record, output)
         }
         return bytes.toByteArray()
+    }
+
+    internal fun writeRecordTo(record: LwwRecord<ByteArray>, output: DataOutput) {
+        output.writeByte(FORMAT_VERSION)
+        when (record) {
+            is LwwRecord.Value -> {
+                output.writeByte(VALUE_RECORD)
+                writeVersion(output, record.version)
+                output.writeInt(record.value.size)
+                output.write(record.value)
+            }
+
+            is LwwRecord.Tombstone -> {
+                output.writeByte(TOMBSTONE_RECORD)
+                writeVersion(output, record.version)
+            }
+        }
     }
 
     fun decode(bytes: ByteArray): LwwRecord<ByteArray> {
@@ -61,7 +66,7 @@ object LwwRecordCodec {
         }
     }
 
-    private fun writeVersion(output: DataOutputStream, version: LwwVersion) {
+    private fun writeVersion(output: DataOutput, version: LwwVersion) {
         output.writeLong(version.logicalClock)
         output.writeLong(version.replicaId)
     }
