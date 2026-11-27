@@ -1,0 +1,8 @@
+./build/install/db-coursework-2026/bin/db-coursework-2026 --id 1 --port 8081 --data-dir ./data/replica-1
+./build/install/db-coursework-2026/bin/db-coursework-2026 --id 2 --port 8082 --data-dir ./data/replica-2
+./build/install/db-coursework-2026/bin/db-coursework-2026 --counter --id 3 --data-dir ./data/counter-3
+sync http://127.0.0.1:8082/snapshot
+put string_key value
+get string_key value
+inc string_key value
+dec string_key value
