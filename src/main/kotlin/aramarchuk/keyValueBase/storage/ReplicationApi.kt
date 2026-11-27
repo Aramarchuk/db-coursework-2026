@@ -8,9 +8,9 @@ data class ReplicaConfig(
     val dataDirectory: Path,
 )
 
-/** Encodes and decodes a full state snapshot for transport. */
-interface LwwMapStateCodec<K, V> {
-    fun encode(state: LwwMapState<K, V>): ByteArray
-    fun decode(bytes: ByteArray): LwwMapState<K, V>
+/** Encodes and decodes maps to and from binary data. */
+interface MapCodec<K, V> {
+    fun encode(map: Map<K, V>): ByteArray
+    fun decode(bytes: ByteArray): Map<K, V>
 }
 
