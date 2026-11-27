@@ -8,7 +8,7 @@ import java.io.DataInput
 import java.io.DataOutput
 import java.io.IOException
 
-object LwwRecordCodec {
+object LwwRecordCodec : ItemCodec<LwwRecord<ByteArray>> {
     fun encode(record: LwwRecord<ByteArray>): ByteArray {
         val bytes = ByteArrayOutputStream()
         DataOutputStream(bytes).use { output ->
@@ -32,6 +32,10 @@ object LwwRecordCodec {
                 writeVersion(output, record.version)
             }
         }
+    }
+
+    override fun writeItem(item: LwwRecord<ByteArray>, output: DataOutput) {
+        writeRecordTo(item, output)
     }
 
     fun decode(bytes: ByteArray): LwwRecord<ByteArray> {
@@ -65,6 +69,8 @@ object LwwRecordCodec {
             else -> throw IOException("Unknown LWW record type $recordType")
         }
     }
+
+    override fun readItem(input: DataInput): LwwRecord<ByteArray> = decode(input)
 
     private fun writeVersion(output: DataOutput, version: LwwVersion) {
         output.writeLong(version.logicalClock)

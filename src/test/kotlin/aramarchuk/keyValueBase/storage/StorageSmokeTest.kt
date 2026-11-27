@@ -13,6 +13,39 @@ import kotlin.test.fail
 
 class StorageSmokeTest {
     @Test
+    fun `LWW record codec round trips values and tombstones`() {
+        val state = LwwMapState(
+            linkedMapOf(
+                "value" to LwwRecord.Value(bytes("record value"), LwwVersion(7L, 3L)),
+                "removed" to LwwRecord.Tombstone(LwwVersion(8L, 2L)),
+            ),
+        )
+        val decodedEntries = state.entries.mapValues { (_, record) ->
+            LwwRecordCodec.decode(LwwRecordCodec.encode(record))
+        }
+
+        assertStatesEqual(state, LwwMapState(decodedEntries))
+    }
+
+    @Test
+    fun `map binary codec round trips arbitrary item types`() {
+        val codec = MapBinaryCodec(
+            encodeKey = { it.toByteArray(Charsets.UTF_8) },
+            decodeKey = { it.toString(Charsets.UTF_8) },
+            itemCodec = object : ItemCodec<Int> {
+                override fun writeItem(item: Int, output: java.io.DataOutput) {
+                    output.writeInt(item)
+                }
+
+                override fun readItem(input: java.io.DataInput): Int = input.readInt()
+            },
+        )
+        val map = linkedMapOf("zero" to 0, "negative" to -12, "positive" to 345)
+
+        assertEquals(map, codec.decode(codec.encode(map)))
+    }
+
+    @Test
     fun `state codec round trips values and tombstones`() {
         val state = LwwMapState(
             linkedMapOf(
@@ -22,7 +55,7 @@ class StorageSmokeTest {
         )
 
         val codec = stringStateCodec()
-        assertStatesEqual(state, codec.decode(codec.encode(state)))
+        assertStatesEqual(state, LwwMapState(codec.decode(codec.encode(state.entries))))
     }
 
     @Test
@@ -38,8 +71,8 @@ class StorageSmokeTest {
             val stateFile = directory.resolve("snapshot.bin")
             val codec = stringStateCodec()
 
-            Files.write(stateFile, codec.encode(state))
-            val restoredState = codec.decode(Files.readAllBytes(stateFile))
+            Files.write(stateFile, codec.encode(state.entries))
+            val restoredState = LwwMapState(codec.decode(Files.readAllBytes(stateFile)))
 
             assertStatesEqual(state, restoredState)
         }
@@ -117,9 +150,10 @@ class StorageSmokeTest {
 
     private fun bytes(value: String): ByteArray = value.toByteArray(Charsets.UTF_8)
 
-    private fun stringStateCodec() = LwwMapStateBinaryCodec<String>(
+    private fun stringStateCodec() = MapBinaryCodec<String, LwwRecord<ByteArray>>(
         encodeKey = { it.toByteArray(Charsets.UTF_8) },
         decodeKey = { it.toString(Charsets.UTF_8) },
+        itemCodec = LwwRecordCodec,
     )
 
     private fun assertStatesEqual(

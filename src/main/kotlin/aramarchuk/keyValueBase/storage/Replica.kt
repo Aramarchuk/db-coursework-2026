@@ -18,9 +18,10 @@ class Replica(config: ReplicaConfig) : AutoCloseable {
         replicaId = config.replicaId,
     )
 
-    private val stateCodec = LwwMapStateBinaryCodec(
+    private val stateCodec = MapBinaryCodec(
         encodeKey = { it.toByteArray(Charsets.UTF_8) },
         decodeKey = { it.toString(Charsets.UTF_8) },
+        itemCodec = LwwRecordCodec,
     )
     private val httpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(3))
@@ -48,7 +49,7 @@ class Replica(config: ReplicaConfig) : AutoCloseable {
 
     fun sync(peer: URI) {
         check(!closed) { "Replica is closed" }
-        val snapshot = stateCodec.encode(storage.snapshot())
+        val snapshot = stateCodec.encode(storage.snapshot().entries)
         val request = HttpRequest.newBuilder(peer)
             .timeout(Duration.ofSeconds(10))
             .header("Content-Type", "application/octet-stream")
@@ -61,7 +62,7 @@ class Replica(config: ReplicaConfig) : AutoCloseable {
             val details = response.body().toString(Charsets.UTF_8)
             throw IOException("Peer returned HTTP ${response.statusCode()}: $details")
         }
-        storage.merge(stateCodec.decode(response.body()))
+        storage.merge(LwwMapState(stateCodec.decode(response.body())))
     }
 
     @Synchronized
@@ -81,7 +82,9 @@ class Replica(config: ReplicaConfig) : AutoCloseable {
             }
 
             val incoming = try {
-                exchange.requestBody.use { body -> stateCodec.decode(body.readBytes()) }
+                exchange.requestBody.use { body ->
+                    LwwMapState(stateCodec.decode(body.readBytes()))
+                }
             } catch (failure: Exception) {
                 sendResponse(
                     exchange,
@@ -94,7 +97,7 @@ class Replica(config: ReplicaConfig) : AutoCloseable {
 
             val mergedSnapshot = try {
                 storage.merge(incoming)
-                stateCodec.encode(storage.snapshot())
+                stateCodec.encode(storage.snapshot().entries)
             } catch (_: Exception) {
                 sendResponse(exchange, 500, "Could not merge snapshot".toByteArray(Charsets.UTF_8), "text/plain")
                 return
