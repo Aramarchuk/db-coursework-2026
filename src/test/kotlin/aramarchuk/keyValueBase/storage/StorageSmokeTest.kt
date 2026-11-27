@@ -17,14 +17,14 @@ import kotlin.test.fail
 
 class StorageSmokeTest {
     private sealed interface TestWalOperation {
-        data class Put(val key: ByteArray, val value: ByteArray) : TestWalOperation {
+        class Put(val key: ByteArray, val value: ByteArray) : TestWalOperation {
             override fun equals(other: Any?): Boolean =
                 this === other || (other is Put && key.contentEquals(other.key) && value.contentEquals(other.value))
 
             override fun hashCode(): Int = 31 * key.contentHashCode() + value.contentHashCode()
         }
 
-        data class Delete(val key: ByteArray) : TestWalOperation {
+        class Delete(val key: ByteArray) : TestWalOperation {
             override fun equals(other: Any?): Boolean = this === other || (other is Delete && key.contentEquals(other.key))
             override fun hashCode(): Int = key.contentHashCode()
         }
