@@ -15,7 +15,10 @@ import java.nio.file.StandardOpenOption.WRITE
 import java.util.zip.CRC32C
 
 /** File-backed [WriteAheadLog]. Only one instance should write to a given path. */
-class FileWriteAheadLog(path: Path) : WriteAheadLog {
+class FileWriteAheadLog<Op>(
+    path: Path,
+    private val operationCodec: WalOperationCodec<Op>,
+) : WriteAheadLog<Op> {
     private val filePath = path.toAbsolutePath().normalize()
     private var baseLsn = 0L
     private var lastLsn = 0L
@@ -50,11 +53,12 @@ class FileWriteAheadLog(path: Path) : WriteAheadLog {
     }
 
     @Synchronized
-    override fun append(operation: WalOperation): Long {
+    override fun append(operation: Op): Long {
         ensureOpen()
         check(lastLsn < Long.MAX_VALUE) { "WAL LSN space exhausted" }
         val lsn = lastLsn + 1L
-        val frame = encodeFrame(lsn, operation)
+        val payload = operationCodec.encode(operation).copyOf()
+        val frame = encodeFrame(lsn, payload)
         val start = validEnd
 
         try {
@@ -81,9 +85,11 @@ class FileWriteAheadLog(path: Path) : WriteAheadLog {
     }
 
     @Synchronized
-    override fun replay(): Sequence<WalEntry> {
+    override fun replay(): Sequence<WalEntry<Op>> {
         ensureOpen()
-        return scan(channel, baseLsn).entries.asSequence().map { it.entry }
+        return scan(channel, baseLsn).entries.asSequence().map { scanned ->
+            WalEntry(scanned.lsn, operationCodec.decode(scanned.payload.copyOf()))
+        }
     }
 
     @Synchronized
@@ -94,7 +100,7 @@ class FileWriteAheadLog(path: Path) : WriteAheadLog {
         require(lsn <= lastLsn) { "Cannot truncate beyond the last appended LSN ($lastLsn)" }
 
         val scan = scan(channel, baseLsn)
-        val remainingStart = scan.entries.firstOrNull { it.entry.lsn > lsn }?.offset
+        val remainingStart = scan.entries.firstOrNull { it.lsn > lsn }?.offset
             ?: scan.validEnd
         val parent = filePath.parent
         val tempPath = Files.createTempFile(parent, filePath.fileName.toString(), ".tmp")
@@ -141,10 +147,8 @@ class FileWriteAheadLog(path: Path) : WriteAheadLog {
         check(channel.isOpen) { "WAL channel is closed; reopen the WAL before using it again" }
     }
 
-    private fun encodeFrame(lsn: Long, operation: WalOperation): ByteBuffer {
-        val key = operation.key
-        val value = (operation as? WalOperation.Put)?.value
-        val contentSize = 8L + 1L + 4L + key.size + (if (value == null) 0L else 4L + value.size)
+    private fun encodeFrame(lsn: Long, payload: ByteArray): ByteBuffer {
+        val contentSize = 8L + 4L + payload.size
         val frameBodySize = contentSize + CHECKSUM_SIZE
         require(frameBodySize <= MAX_FRAME_SIZE) {
             "WAL entry is too large (maximum frame size is $MAX_FRAME_SIZE bytes)"
@@ -152,16 +156,8 @@ class FileWriteAheadLog(path: Path) : WriteAheadLog {
 
         val content = ByteBuffer.allocate(contentSize.toInt())
         content.putLong(lsn)
-        when (operation) {
-            is WalOperation.Put -> content.put(OP_PUT)
-            is WalOperation.Delete -> content.put(OP_DELETE)
-        }
-        content.putInt(key.size)
-        content.put(key)
-        if (value != null) {
-            content.putInt(value.size)
-            content.put(value)
-        }
+        content.putInt(payload.size)
+        content.put(payload)
 
         val crc = CRC32C().apply { update(content.array(), 0, content.position()) }.value.toInt()
         val frame = ByteBuffer.allocate(WAL_ENTRY_SIZE_IN_BYTES + frameBodySize.toInt())
@@ -210,22 +206,13 @@ class FileWriteAheadLog(path: Path) : WriteAheadLog {
                 throw IOException("Unexpected WAL LSN $lsn at offset $offset; expected $nextExpectedLsn")
             }
 
-            val operationType = content.get()
-            val keyLength = readLength(content, "key", offset)
-            val key = readBytes(content, keyLength, "key", offset)
-            val operation = when (operationType) {
-                OP_PUT -> {
-                    val valueLength = readLength(content, "value", offset)
-                    WalOperation.Put(key, readBytes(content, valueLength, "value", offset))
-                }
-                OP_DELETE -> WalOperation.Delete(key)
-                else -> throw IOException("Unknown WAL operation type $operationType at offset $offset")
-            }
+            val payloadLength = readLength(content, "operation payload", offset)
+            val payload = readBytes(content, payloadLength, "operation payload", offset)
             if (content.hasRemaining()) {
                 throw IOException("Unexpected trailing bytes in WAL entry at offset $offset")
             }
 
-            entries += ScannedEntry(WalEntry(lsn, operation), offset)
+            entries += ScannedEntry(lsn, payload, offset)
             expectedLsn = lsn
             offset += WAL_ENTRY_SIZE_IN_BYTES + frameBodySize
         }
@@ -310,7 +297,7 @@ class FileWriteAheadLog(path: Path) : WriteAheadLog {
         }
     }
 
-    private data class ScannedEntry(val entry: WalEntry, val offset: Long)
+    private data class ScannedEntry(val lsn: Long, val payload: ByteArray, val offset: Long)
 
     private data class ScanResult(
         val entries: List<ScannedEntry>,
@@ -320,14 +307,12 @@ class FileWriteAheadLog(path: Path) : WriteAheadLog {
 
     private companion object {
         const val MAGIC = 0x4B565741 // "KVWA"
-        const val FORMAT_VERSION = 1
+        const val FORMAT_VERSION = 2
         const val HEADER_SIZE = 16
         const val WAL_ENTRY_SIZE_IN_BYTES = 4
         const val CHECKSUM_SIZE = 4
-        const val MIN_FRAME_BODY_SIZE = 8 + 1 + 4 + CHECKSUM_SIZE
+        const val MIN_FRAME_BODY_SIZE = 8 + 4 + CHECKSUM_SIZE
         const val MAX_FRAME_SIZE = 256 * 1024 * 1024
         const val COPY_BUFFER_SIZE = 64 * 1024
-        const val OP_PUT: Byte = 1
-        const val OP_DELETE: Byte = 2
     }
 }

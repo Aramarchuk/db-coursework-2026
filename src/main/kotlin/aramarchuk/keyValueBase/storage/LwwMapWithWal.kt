@@ -4,26 +4,21 @@ package aramarchuk.keyValueBase.storage
  * In-memory key-value state backed by a write-ahead log. The state is rebuilt
  * from the log when this store is opened.
  *
- * Only one store should use a given [WriteAheadLog] at a time. Key codecs must
- * be stable across restarts.
+ * Only one store should use a given [WriteAheadLog] at a time. The WAL's key
+ * codec must remain stable across restarts.
  */
 class LwwMapWithWal<K : Comparable<K>>(
-    wal: WriteAheadLog,
-    private val encodeKey: (K) -> ByteArray,
-    private val decodeKey: (ByteArray) -> K,
+    wal: WriteAheadLog<LwwWalOperation<K>>,
     override val replicaId: Long,
 ) : KVStore<K>, AutoCloseable, LwwMap<K, ByteArray> {
-    private val stateStore = WalBackedStateStore(
+    private val stateStore = WalBackedStateStore<Map<K, LwwRecord<ByteArray>>, LwwWalOperation<K>>(
         wal = wal,
         initialState = sortedMapOf<K, LwwRecord<ByteArray>>(),
         applyOperation = { currentState, operation ->
             val nextState = sortedMapOf<K, LwwRecord<ByteArray>>().apply { putAll(currentState) }
             when (operation) {
-                is WalOperation.Put -> {
-                    val key = decodeKey(operation.key.copyOf())
-                    nextState[key] = LwwRecordCodec.decode(operation.value.copyOf())
-                }
-                is WalOperation.Delete -> nextState.remove(decodeKey(operation.key.copyOf()))
+                is LwwWalOperation.SetRecord -> nextState[operation.key] = copyRecord(operation.record)
+                is LwwWalOperation.Remove -> nextState.remove(operation.key)
             }
             nextState
         },
@@ -39,10 +34,9 @@ class LwwMapWithWal<K : Comparable<K>>(
     @Synchronized
     override fun put(key: K, value: ByteArray) {
         ensureUsable()
-        val encodedKey = encodeKey(key).copyOf()
         val stableValue = value.copyOf()
         val record = LwwRecord.Value(stableValue, LwwVersion(nextLogicalClock(), replicaId))
-        stateStore.apply(WalOperation.Put(encodedKey, LwwRecordCodec.encode(record)))
+        stateStore.apply(LwwWalOperation.SetRecord(key, record))
     }
 
     @Synchronized
@@ -54,9 +48,8 @@ class LwwMapWithWal<K : Comparable<K>>(
     @Synchronized
     override fun delete(key: K) {
         ensureUsable()
-        val encodedKey = encodeKey(key).copyOf()
         val record = LwwRecord.Tombstone(LwwVersion(nextLogicalClock(), replicaId))
-        stateStore.apply(WalOperation.Put(encodedKey, LwwRecordCodec.encode(record)))
+        stateStore.apply(LwwWalOperation.SetRecord(key, record))
     }
 
     @Synchronized
@@ -67,8 +60,7 @@ class LwwMapWithWal<K : Comparable<K>>(
             val currentRecord = stateStore.state()[key]
             if (currentRecord == null || incomingRecord.version > currentRecord.version) {
                 val stableRecord = copyRecord(incomingRecord)
-                val encodedKey = encodeKey(key).copyOf()
-                stateStore.apply(WalOperation.Put(encodedKey, LwwRecordCodec.encode(stableRecord)))
+                stateStore.apply(LwwWalOperation.SetRecord(key, stableRecord))
             }
         }
     }

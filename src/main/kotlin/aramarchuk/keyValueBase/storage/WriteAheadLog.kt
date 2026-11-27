@@ -1,46 +1,28 @@
 package aramarchuk.keyValueBase.storage
 
-/** An operation that can be replayed to reconstruct the key-value store. */
-sealed interface WalOperation {
-    val key: ByteArray
-
-    data class Put(
-        override val key: ByteArray,
-        val value: ByteArray,
-    ) : WalOperation {
-        override fun equals(other: Any?): Boolean =
-            this === other || (other is Put && key.contentEquals(other.key) && value.contentEquals(other.value))
-
-        override fun hashCode(): Int = 31 * key.contentHashCode() + value.contentHashCode()
-    }
-
-    data class Delete(
-        override val key: ByteArray,
-    ) : WalOperation {
-        override fun equals(other: Any?): Boolean =
-            this === other || (other is Delete && key.contentEquals(other.key))
-
-        override fun hashCode(): Int = key.contentHashCode()
-    }
-}
-
 /** One operation as stored in the log. LSNs increase in append order. */
-data class WalEntry(
+data class WalEntry<Operation>(
     val lsn: Long,
-    val operation: WalOperation,
+    val operation: Operation,
 )
+
+/** Converts typed operations to/from their durable binary representation. */
+interface WalOperationCodec<Operation> {
+    fun encode(operation: Operation): ByteArray
+    fun decode(bytes: ByteArray): Operation
+}
 
 /**
  * Append-only log used to recover the store after a process or machine failure.
- * Implementations must preserve append order and treat byte arrays as immutable
- * snapshots (copy them if callers may mutate them after a call).
+ * Implementations must preserve append order. Operations should be immutable.
+ * File-backed implementations use a [WalOperationCodec] for serialization.
  */
-interface WriteAheadLog : AutoCloseable {
+interface WriteAheadLog<Operation> : AutoCloseable {
     /**
      * Append an operation and return its log sequence number. The entry may not
      * be durable until [sync] completes.
      */
-    fun append(operation: WalOperation): Long
+    fun append(operation: Operation): Long
 
     /** Make all operations appended so far durable on stable storage. */
     fun sync()
@@ -50,7 +32,7 @@ interface WriteAheadLog : AutoCloseable {
      * Recovery should ignore an incomplete final entry (a torn write) and report
      * corruption in the middle of the log.
      */
-    fun replay(): Sequence<WalEntry>
+    fun replay(): Sequence<WalEntry<Operation>>
 
     /**
      * Remove entries through [lsn]. Call only after a durable checkpoint includes
