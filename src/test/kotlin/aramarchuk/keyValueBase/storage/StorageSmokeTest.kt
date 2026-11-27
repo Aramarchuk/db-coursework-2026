@@ -141,7 +141,7 @@ class StorageSmokeTest {
         }
     }
 
-    private fun openStringStore(walPath: Path): WalBackedKVStore<String> = WalBackedKVStore(
+    private fun openStringStore(walPath: Path): LwwMapWithWal<String> = LwwMapWithWal(
         wal = FileWriteAheadLog(walPath),
         encodeKey = { it.toByteArray(Charsets.UTF_8) },
         decodeKey = { it.toString(Charsets.UTF_8) },
