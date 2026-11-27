@@ -1,5 +1,9 @@
 package aramarchuk.keyValueBase.storage
 
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.Path
@@ -12,6 +16,20 @@ import kotlin.test.assertNull
 import kotlin.test.fail
 
 class StorageSmokeTest {
+    private sealed interface TestWalOperation {
+        data class Put(val key: ByteArray, val value: ByteArray) : TestWalOperation {
+            override fun equals(other: Any?): Boolean =
+                this === other || (other is Put && key.contentEquals(other.key) && value.contentEquals(other.value))
+
+            override fun hashCode(): Int = 31 * key.contentHashCode() + value.contentHashCode()
+        }
+
+        data class Delete(val key: ByteArray) : TestWalOperation {
+            override fun equals(other: Any?): Boolean = this === other || (other is Delete && key.contentEquals(other.key))
+            override fun hashCode(): Int = key.contentHashCode()
+        }
+    }
+
     @Test
     fun `LWW record codec round trips values and tombstones`() {
         val state = LwwMapState(
@@ -81,17 +99,17 @@ class StorageSmokeTest {
     fun `WAL replays operations after reopening`() = withTempDirectory { directory ->
         val walPath = directory.resolve("store.wal")
 
-        FileWriteAheadLog(walPath).use { wal ->
-            assertEquals(1L, wal.append(WalOperation.Put(bytes("key"), bytes("value"))))
-            assertEquals(2L, wal.append(WalOperation.Delete(bytes("other"))))
+        FileWriteAheadLog(walPath, walOperationCodec()).use { wal ->
+            assertEquals(1L, wal.append(TestWalOperation.Put(bytes("key"), bytes("value"))))
+            assertEquals(2L, wal.append(TestWalOperation.Delete(bytes("other"))))
             wal.sync()
         }
 
-        FileWriteAheadLog(walPath).use { wal ->
+        FileWriteAheadLog(walPath, walOperationCodec()).use { wal ->
             val entries = wal.replay().toList()
             assertEquals(listOf(1L, 2L), entries.map { it.lsn })
-            assertEquals(WalOperation.Put(bytes("key"), bytes("value")), entries[0].operation)
-            assertEquals(WalOperation.Delete(bytes("other")), entries[1].operation)
+            assertEquals(TestWalOperation.Put(bytes("key"), bytes("value")), entries[0].operation)
+            assertEquals(TestWalOperation.Delete(bytes("other")), entries[1].operation)
         }
     }
 
@@ -99,9 +117,9 @@ class StorageSmokeTest {
     fun `WAL ignores a torn final entry and continues its sequence`() = withTempDirectory { directory ->
         val walPath = directory.resolve("store.wal")
 
-        FileWriteAheadLog(walPath).use { wal ->
-            wal.append(WalOperation.Put(bytes("first"), bytes("kept")))
-            wal.append(WalOperation.Put(bytes("second"), bytes("torn")))
+        FileWriteAheadLog(walPath, walOperationCodec()).use { wal ->
+            wal.append(TestWalOperation.Put(bytes("first"), bytes("kept")))
+            wal.append(TestWalOperation.Put(bytes("second"), bytes("torn")))
             wal.sync()
         }
 
@@ -109,18 +127,18 @@ class StorageSmokeTest {
             channel.truncate(channel.size() - 1L)
         }
 
-        FileWriteAheadLog(walPath).use { wal ->
+        FileWriteAheadLog(walPath, walOperationCodec()).use { wal ->
             val entries = wal.replay().toList()
             assertEquals(1, entries.size)
             assertEquals(1L, entries.single().lsn)
-            assertEquals(2L, wal.append(WalOperation.Delete(bytes("first"))))
+            assertEquals(2L, wal.append(TestWalOperation.Delete(bytes("first"))))
             wal.sync()
         }
 
-        FileWriteAheadLog(walPath).use { wal ->
+        FileWriteAheadLog(walPath, walOperationCodec()).use { wal ->
             val entries = wal.replay().toList()
             assertEquals(listOf(1L, 2L), entries.map { it.lsn })
-            assertEquals(WalOperation.Delete(bytes("first")), entries.last().operation)
+            assertEquals(TestWalOperation.Delete(bytes("first")), entries.last().operation)
         }
     }
 
@@ -141,14 +159,61 @@ class StorageSmokeTest {
         }
     }
 
-    private fun openStringStore(walPath: Path): WalBackedKVStore<String> = WalBackedKVStore(
-        wal = FileWriteAheadLog(walPath),
-        encodeKey = { it.toByteArray(Charsets.UTF_8) },
-        decodeKey = { it.toString(Charsets.UTF_8) },
+    private fun openStringStore(walPath: Path): LwwMapWithWal<String> = LwwMapWithWal(
+        wal = FileWriteAheadLog(
+            walPath,
+            LwwWalOperationCodec(
+                encodeKey = { it.toByteArray(Charsets.UTF_8) },
+                decodeKey = { it.toString(Charsets.UTF_8) },
+            ),
+        ),
         replicaId = 1L,
     )
 
     private fun bytes(value: String): ByteArray = value.toByteArray(Charsets.UTF_8)
+
+    private fun walOperationCodec() = object : WalOperationCodec<TestWalOperation> {
+        override fun encode(operation: TestWalOperation): ByteArray {
+            val bytes = ByteArrayOutputStream()
+            DataOutputStream(bytes).use { output ->
+                when (operation) {
+                    is TestWalOperation.Put -> {
+                        output.writeByte(1)
+                        writeBytes(output, operation.key)
+                        writeBytes(output, operation.value)
+                    }
+                    is TestWalOperation.Delete -> {
+                        output.writeByte(2)
+                        writeBytes(output, operation.key)
+                    }
+                }
+            }
+            return bytes.toByteArray()
+        }
+
+        override fun decode(bytes: ByteArray): TestWalOperation {
+            DataInputStream(ByteArrayInputStream(bytes)).use { input ->
+                val operation = when (input.readUnsignedByte()) {
+                    1 -> TestWalOperation.Put(readBytes(input), readBytes(input))
+                    2 -> TestWalOperation.Delete(readBytes(input))
+                    else -> error("Unknown test WAL operation")
+                }
+                check(input.available() == 0) { "Unexpected trailing bytes" }
+                return operation
+            }
+        }
+
+        private fun writeBytes(output: DataOutputStream, bytes: ByteArray) {
+            output.writeInt(bytes.size)
+            output.write(bytes)
+        }
+
+        private fun readBytes(input: DataInputStream): ByteArray {
+            val size = input.readInt()
+            require(size >= 0 && size <= input.available()) { "Invalid byte array size" }
+            return ByteArray(size).also(input::readFully)
+        }
+    }
 
     private fun stringStateCodec() = MapBinaryCodec<String, LwwRecord<ByteArray>>(
         encodeKey = { it.toByteArray(Charsets.UTF_8) },

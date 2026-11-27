@@ -11,10 +11,14 @@ import java.net.http.HttpResponse
 import java.time.Duration
 
 class Replica(config: ReplicaConfig) : AutoCloseable {
-    val storage = WalBackedKVStore<String>(
-        wal = FileWriteAheadLog(config.dataDirectory.resolve("store.wal")),
-        encodeKey = { it.toByteArray(Charsets.UTF_8) },
-        decodeKey = { it.toString(Charsets.UTF_8) },
+    val storage = LwwMapWithWal<String>(
+        wal = FileWriteAheadLog(
+            config.dataDirectory.resolve("store.wal"),
+            LwwWalOperationCodec(
+                encodeKey = { it.toByteArray(Charsets.UTF_8) },
+                decodeKey = { it.toString(Charsets.UTF_8) },
+            ),
+        ),
         replicaId = config.replicaId,
     )
 
