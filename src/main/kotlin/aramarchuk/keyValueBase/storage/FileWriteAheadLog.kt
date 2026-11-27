@@ -297,7 +297,7 @@ class FileWriteAheadLog<Op>(
         }
     }
 
-    private data class ScannedEntry(val lsn: Long, val payload: ByteArray, val offset: Long)
+    private class ScannedEntry(val lsn: Long, val payload: ByteArray, val offset: Long)
 
     private data class ScanResult(
         val entries: List<ScannedEntry>,
